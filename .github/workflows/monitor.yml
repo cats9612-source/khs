@@ -2,8 +2,10 @@ name: Maguro Mart availability monitor
 
 on:
   schedule:
-    # GitHub cron is UTC. Runs at minute 0 and 30 of every hour.
+    # 30분마다 실행
     - cron: "0,30 * * * *"
+
+  # Actions 화면에서 수동 실행 가능
   workflow_dispatch:
 
 permissions:
@@ -18,80 +20,175 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     env:
       TARGET_DATE: "2026-09-19"
       PARTY_SIZE: "4"
       OUTPUT_FILE: "availability.json"
+
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
       GH_TOKEN: ${{ github.token }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
+      # --------------------------------------------------
+      # 1. Repository checkout
+      # --------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # --------------------------------------------------
+      # 2. Python
+      # --------------------------------------------------
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      # --------------------------------------------------
+      # 3. Dependencies
+      # --------------------------------------------------
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # --------------------------------------------------
+      # 4. Playwright Chromium
+      # --------------------------------------------------
+      - name: Install Playwright Chromium
+        run: |
           python -m playwright install --with-deps chromium
 
-      - name: Check TableCheck
-        run: python monitor.py
+      # --------------------------------------------------
+      # 5. Check TableCheck
+      # --------------------------------------------------
+      - name: Check Maguro Mart availability
+        run: |
+          python monitor.py
 
-      - name: Show result
-        run: cat availability.json
+      # --------------------------------------------------
+      # 6. Display result
+      # --------------------------------------------------
+      - name: Show availability result
+        run: |
+          echo "========== RESULT =========="
+          cat availability.json
+          echo "============================"
 
-      - name: Read result
+      # --------------------------------------------------
+      # 7. Read JSON result
+      # --------------------------------------------------
+      - name: Read availability result
         id: result
         shell: bash
         run: |
-          echo "available=$(jq -r '.available' availability.json)" >> "$GITHUB_OUTPUT"
-          echo "status=$(jq -r '.status' availability.json)" >> "$GITHUB_OUTPUT"
-          echo "times=$(jq -r '.times | join(", ")' availability.json)" >> "$GITHUB_OUTPUT"
+          AVAILABLE=$(jq -r '.available' availability.json)
+          STATUS=$(jq -r '.status' availability.json)
+          TIMES=$(jq -r '.times | join(", ")' availability.json)
 
-      - name: Check whether an availability alert is already open
+          echo "available=$AVAILABLE" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "times=$TIMES" >> "$GITHUB_OUTPUT"
+
+          echo "Available: $AVAILABLE"
+          echo "Status: $STATUS"
+          echo "Times: $TIMES"
+
+      # --------------------------------------------------
+      # 8. Check whether we already sent an alert
+      # --------------------------------------------------
+      - name: Check existing availability alert
         if: steps.result.outputs.available == 'true'
         id: existing
         shell: bash
         run: |
           TITLE="[AVAILABLE] Maguro Mart 2026-09-19 / 4 people"
-          COUNT=$(gh issue list --state open --search "\"$TITLE\" in:title" --json title --jq "[.[] | select(.title == \"$TITLE\")] | length")
+
+          COUNT=$(gh issue list \
+            --state open \
+            --search "\"$TITLE\" in:title" \
+            --json title \
+            --jq "[.[] | select(.title == \"$TITLE\")] | length")
+
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Send Telegram alert
-        if: steps.result.outputs.available == 'true' && steps.existing.outputs.count == '0'
-        run: python notify.py
+          echo "Existing alert count: $COUNT"
 
-      - name: Open state issue to prevent duplicate alerts
-        if: steps.result.outputs.available == 'true' && steps.existing.outputs.count == '0'
+      # --------------------------------------------------
+      # 9. Telegram notification
+      # --------------------------------------------------
+      - name: Send Telegram alert
+        if: >
+          steps.result.outputs.available == 'true' &&
+          steps.existing.outputs.count == '0'
+        run: |
+          python notify.py
+
+      # --------------------------------------------------
+      # 10. Create state issue
+      #
+      # Prevent repeated Telegram notifications while
+      # reservation remains available.
+      # --------------------------------------------------
+      - name: Create availability state
+        if: >
+          steps.result.outputs.available == 'true' &&
+          steps.existing.outputs.count == '0'
         shell: bash
         run: |
           TITLE="[AVAILABLE] Maguro Mart 2026-09-19 / 4 people"
           TIMES="${{ steps.result.outputs.times }}"
+
           gh issue create \
             --title "$TITLE" \
-            --body "Detected available TableCheck slot(s): **${TIMES}**. This issue is used as the monitor state and will be closed automatically when availability disappears."
+            --body "Detected available TableCheck slot(s): **${TIMES}**
 
-      - name: Reset state when availability disappears
+          Target date: 2026-09-19
+          Party size: 4
+
+          This issue prevents duplicate Telegram alerts.
+
+          When availability disappears, this issue will automatically close."
+
+      # --------------------------------------------------
+      # 11. Reset notification state when sold out
+      # --------------------------------------------------
+      - name: Reset availability state
         if: steps.result.outputs.available == 'false'
         shell: bash
         run: |
           TITLE="[AVAILABLE] Maguro Mart 2026-09-19 / 4 people"
-          gh issue list --state open --search "\"$TITLE\" in:title" --json number,title --jq \
-            ".[] | select(.title == \"$TITLE\") | .number" | \
-          while read -r N; do
-            [ -z "$N" ] || gh issue close "$N" --comment "No selectable slot detected on the latest check. State reset; a future reappearance will trigger a new Telegram alert."
+
+          gh issue list \
+            --state open \
+            --search "\"$TITLE\" in:title" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$TITLE\") | .number" |
+          while read -r N
+          do
+
+            if [ -n "$N" ]; then
+
+              gh issue close "$N" \
+                --comment "No selectable reservation slot was detected on the latest check.
+
+          Notification state has been reset.
+
+          A new Telegram alert will be sent if availability appears again."
+
+            fi
+
           done
 
-      - name: Upload diagnostics when detection errors
+      # --------------------------------------------------
+      # 12. Upload debug information if monitor failed
+      # --------------------------------------------------
+      - name: Upload debug information
         if: steps.result.outputs.status == 'error'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tablecheck-debug
           path: |
