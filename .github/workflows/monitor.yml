@@ -2,7 +2,7 @@ name: Maguro Mart availability monitor
 
 on:
   schedule:
-    - cron: "0,30 * * * *"
+    - cron: "*/20 * * * *"
 
   workflow_dispatch:
 
