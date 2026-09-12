@@ -3,7 +3,7 @@ name: Maguro Mart availability monitor
 on:
   schedule:
     # 매시간 00분, 20분, 40분에 실행
-    - cron: "*/20 * * * *"
+    - cron: "7,27,47 * * * *"
 
   # 수동 실행
   workflow_dispatch:
