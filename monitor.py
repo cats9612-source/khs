@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 BASE_URL = "https://www.tablecheck.com/en/shops/maguro-mart/reserve"
-TARGET_DATE = os.getenv("TARGET_DATE", "2026-10-12")
+TARGET_DATE = os.getenv("TARGET_DATE", "2026-09-19")
 PARTY_SIZE = int(os.getenv("PARTY_SIZE", "4"))
 OUTPUT = Path(os.getenv("OUTPUT_FILE", "availability.json"))
 
